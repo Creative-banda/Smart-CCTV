@@ -3,12 +3,25 @@ import datetime
 import os
 import time
 from collections import deque
+from dotenv import load_dotenv
+import cloudinary
+import cloudinary.uploader
+
+# Load environment variables
+load_dotenv()
+
+# Configure Cloudinary
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
+)
 
 # Configuration
 OUTPUT_DIR = "recordings"
 CONTINUOUS_CHUNK_DURATION = 30  # Duration of each video chunk in seconds
 FPS = 15
-CODEC = cv2.VideoWriter_fourcc(*'mp4v')
+CODEC = cv2.VideoWriter_fourcc(*'XVID')  # XVID codec - works without external libraries
 PRE_MOTION_BUFFER_SIZE = FPS * 3  # 3 seconds of frames
 MOTION_THRESHOLD = 500  # Configurable motion sensitivity
 MIN_MOTION_FRAMES = 3  # Minimum consecutive frames to trigger motion
@@ -36,9 +49,37 @@ def get_filename(mode):
     """Generate filename based on mode"""
     now = datetime.datetime.now()
     if mode == "continuous":
-        return now.strftime("%Y-%m-%d__%H-%M__CONTINUOUS.mp4")
+        return now.strftime("%Y-%m-%d__%H-%M__CONTINUOUS.avi")
     else:
-        return now.strftime("%Y-%m-%d__%H-%M-%S__MOTION.mp4")
+        return now.strftime("%Y-%m-%d__%H-%M-%S__MOTION.avi")
+
+def upload_to_cloudinary(filepath, filename):
+    """Upload video to Cloudinary and delete local file on success"""
+    try:
+        print(f"[UPLOAD] Uploading {filename} to Cloudinary...")
+        
+        # Simple upload with folder organization
+        response = cloudinary.uploader.upload(
+            filepath,
+            resource_type="video",
+            folder="smart-cctv"
+        )
+        
+        print(f"[UPLOAD] Success! URL: {response['secure_url']}")
+        
+        # Delete local file after successful upload
+        try:
+            os.remove(filepath)
+            print(f"[CLEANUP] Deleted local file: {filename}")
+        except Exception as del_error:
+            print(f"[CLEANUP] Warning: Could not delete {filename}: {str(del_error)}")
+        
+        return response['secure_url']
+    
+    except Exception as e:
+        print(f"[UPLOAD] Failed to upload {filename}: {str(e)}")
+        print(f"[CLEANUP] Keeping local file: {filename}")
+        return None
 
 def detect_motion(frame, prev_frame, threshold):
     """Simple frame difference motion detection"""
@@ -117,6 +158,10 @@ def continuous_recording_mode(cap, frame_width, frame_height):
         duration = frames_written / FPS
         print(f"[CONTINUOUS] Saved: {filename} ({frames_written} frames, {duration:.1f}s)")
         
+        # Upload to Cloudinary
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        upload_to_cloudinary(filepath, filename)
+        
         # Check if we should continue
         if not should_continue_mode(mode_start_time, "continuous"):
             break
@@ -184,6 +229,11 @@ def motion_recording_mode(cap, frame_width, frame_height):
             if time.time() - no_motion_time > POST_MOTION_DELAY:
                 writer.release()
                 print(f"[MOTION] Saved: {filename}")
+                
+                # Upload to Cloudinary
+                filepath = os.path.join(OUTPUT_DIR, filename)
+                upload_to_cloudinary(filepath, filename)
+                
                 recording = False
                 writer = None
         
@@ -196,6 +246,10 @@ def motion_recording_mode(cap, frame_width, frame_height):
     if recording and writer is not None:
         writer.release()
         print(f"[MOTION] Saved: {filename}")
+        
+        # Upload to Cloudinary
+        filepath = os.path.join(OUTPUT_DIR, filename)
+        upload_to_cloudinary(filepath, filename)
     
     print("[MODE 2] Motion-based recording mode completed")
 
@@ -222,7 +276,7 @@ def main():
     
     print(f"Camera resolution: {frame_width}x{frame_height}")
     print(f"Recording FPS: {FPS}")
-    print(f"Codec: MP4V")
+    print(f"Codec: XVID")
     print()
     
     try:
